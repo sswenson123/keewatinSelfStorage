@@ -1,54 +1,70 @@
 /**
- * Keewatin Self Storage — StorEdge Availability Scraper
- * ─────────────────────────────────────────────────────
+ * Keewatin Self Storage — StorEdge Pricing & Availability Scraper (gentle mode)
+ * ─────────────────────────────────────────────────────────────────────────────
  * Run from the keewatin-website folder:
  *   node scraper.js
  *
  * What it does:
- *   1. Opens the StorEdge rental portal in a headless browser
- *   2. Reads each unit's name, price, and availability
- *   3. Writes the result to data/availability.json
- *   4. Your website reads that file and shows live badges
+ *   1. Opens the StorEdge rental portal for the Keewatin facility
+ *   2. Reads each unit's size, starting price, and availability from the
+ *      portal's JSON API (reliable — not the rendered card text)
+ *   3. Writes data/availability.json (your site reads it via js/availability.js)
  *
- * First time setup (run once):
- *   npm install puppeteer
+ * First-time setup (run once):
+ *   npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
  *
- * Schedule it automatically (optional):
- *   crontab -e  →  add:  0 * * * * cd /path/to/keewatin-website && node scraper.js
- *   (runs every hour on the hour)
+ * Runs gently: opens a real (visible) Chrome window with stealth enabled so
+ * StorEdge doesn't flag it as a bot. Scrape no more than once or twice a day.
+ *
+ * Schedule (runs on YOUR Mac — StorEdge blocks cloud/datacenter IPs):
+ *   crontab -e   then add (twice a day, 7am & 7pm; HEADLESS=1 keeps it hidden):
+ *   0 7,19 * * * cd "/Users/sswenson/Claude/Self Storage/keewatin-website" && HEADLESS=1 /usr/local/bin/node scraper.js >> scraper.log 2>&1 && git add data/availability.json && git commit -m "Auto: update prices" && git push
  */
 
-const puppeteer = require('puppeteer');
-const fs        = require('fs');
-const path      = require('path');
+let puppeteer;
+try {
+  puppeteer = require('puppeteer-extra');
+  puppeteer.use(require('puppeteer-extra-plugin-stealth')());
+  console.log('🥷 Stealth mode on.');
+} catch (_) {
+  puppeteer = require('puppeteer');
+  console.log('ℹ️  Stealth plugin not installed — using plain puppeteer.');
+}
+const fs   = require('fs');
+const path = require('path');
 
-const RENT_URL = [
-  'https://rental-center.storedge.com/?',
-  'companyId=ef2375f3-b212-4670-bbc0-be544f6614b6',
-  '&facilityId=4e5d19f2-a80f-45d0-ba9f-e13f89f04275',
-  '#/move-in'
-].join('');
+const wait   = (ms) => new Promise((r) => setTimeout(r, ms));
+const jitter = (base) => base + Math.floor(Math.random() * 1500);
+
+// ── Keewatin Self Storage facility ───────────────────────────────────────────
+const COMPANY_ID  = 'ef2375f3-b212-4670-bbc0-be544f6614b6';
+const FACILITY_ID = '4e5d19f2-a80f-45d0-ba9f-e13f89f04275';
+
+const RENT_URL =
+  `https://rental-center.storedge.com/?companyId=${COMPANY_ID}` +
+  `&facilityId=${FACILITY_ID}#/move-in`;
 
 const OUT_FILE = path.join(__dirname, 'data', 'availability.json');
 
-// Maps StorEdge unit name → our key
-const UNIT_KEY_MAP = {
-  '8 x 10':  '8x10',
-  '8x10':    '8x10',
-  '10 x 10': '10x10',
-  '10x10':   '10x10',
-  '12 x 10': '12x10',
-  '12x10':   '12x10',
-  '10 x 24': '10x24',
-  '10x24':   '10x24',
-};
+// Map StorEdge sizes → our site keys: 8x10, 10x10, 12x10, 10x24
+function normaliseKey(sizeStr) {
+  if (!sizeStr) return null;
+  const nums = (sizeStr.match(/\d+/g) || []).map(Number);
+  if (nums.length < 2) return null;
+  const set = new Set(nums);
+  if (set.has(8))  return '8x10';
+  if (set.has(12)) return '12x10';
+  if (set.has(24)) return '10x24';
+  if (set.has(10)) return '10x10';
+  return null;
+}
 
 (async () => {
   console.log('🔍 Launching browser...');
-
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: process.env.HEADLESS === '1' ? 'new' : false,
+    defaultViewport: null,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--start-maximized'],
   });
 
   const page = await browser.newPage();
@@ -56,99 +72,125 @@ const UNIT_KEY_MAP = {
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
     'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
+  await page.setViewport({ width: 1280, height: 900 });
+  await wait(jitter(1200));
+
+  const apiPayloads = [];
+  page.on('response', async (res) => {
+    try {
+      const ct = res.headers()['content-type'] || '';
+      if (ct.includes('json')) apiPayloads.push({ url: res.url(), body: await res.json() });
+    } catch (_) {}
+  });
 
   console.log('🌐 Loading StorEdge rental center...');
-  await page.goto(RENT_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-  await new Promise(r => setTimeout(r, 4000)); // let Angular finish rendering
+  let ok = false;
+  for (let attempt = 1; attempt <= 4 && !ok; attempt++) {
+    await page.goto(RENT_URL, { waitUntil: 'networkidle2', timeout: 45000 });
+    await new Promise((r) => setTimeout(r, 5000));
+    const body = await page.evaluate(() => document.body.innerText || '');
+    if (/service unavailable|temporarily unavailable/i.test(body)) {
+      console.log(`⚠️  StorEdge said "Service Unavailable" (try ${attempt}/4). Waiting 30s...`);
+      if (attempt < 4) await new Promise((r) => setTimeout(r, 30000));
+    } else {
+      ok = true;
+    }
+  }
+  if (!ok) {
+    await browser.close();
+    console.log('\n❌ StorEdge is temporarily down (503). Existing prices left untouched. Try later.');
+    process.exit(3);
+  }
 
-  // ── Extract unit cards ──────────────────────────────────────────────────────
-  const scraped = await page.evaluate(() => {
-    const results = [];
-
-    // StorEdge renders unit-type cards — try several selector patterns
+  const cardTexts = await page.evaluate(() => {
     const selectors = [
       '.unit-type-card', '.unit-card', '[class*="unit-type"]',
-      '.available-unit', '.panel', '[class*="UnitType"]'
+      '.available-unit', '.panel', '[class*="UnitType"]',
     ];
-
     let cards = [];
     for (const sel of selectors) {
       cards = [...document.querySelectorAll(sel)];
-      if (cards.length > 0) break;
+      if (cards.length) break;
     }
-
-    // Fallback: grab all visible text and look for size/price pairs
-    if (cards.length === 0) {
-      const allText = document.body.innerText;
-      return { fallbackText: allText.slice(0, 5000), cards: [] };
-    }
-
-    cards.forEach(card => {
-      const text      = card.innerText || '';
-      const available = !/not available/i.test(text) &&
-                        !/unavailable/i.test(text) &&
-                        !!card.querySelector('button:not([disabled])');
-      const sizeMatch  = text.match(/(\d+\s*[x×]\s*\d+)/i);
-      const priceMatch = text.match(/\$(\d+(?:\.\d{2})?)/);
-      results.push({
-        rawText:   text.trim().slice(0, 200),
-        size:      sizeMatch  ? sizeMatch[1].replace(/\s/g,'').toLowerCase() : null,
-        price:     priceMatch ? '$' + priceMatch[1] : null,
-        available
-      });
-    });
-
-    return { cards: results, fallbackText: null };
+    return cards.map((c) => (c.innerText || '').trim().slice(0, 200));
   });
 
   await browser.close();
 
-  // ── Parse results ───────────────────────────────────────────────────────────
-  console.log(`\n📦 Found ${scraped.cards.length} unit card(s)\n`);
+  fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(__dirname, 'data', 'storedge-raw.json'),
+    JSON.stringify({ cardTexts, apiPayloads }, null, 2));
 
-  // Load existing JSON to preserve any manual overrides
-  let existing = { units: {} };
-  try { existing = JSON.parse(fs.readFileSync(OUT_FILE, 'utf8')); } catch {}
-
-  const units = { ...existing.units };
-
-  if (scraped.cards.length > 0) {
-    scraped.cards.forEach(card => {
-      if (!card.size) return;
-      // Normalise key: "8x10", "10x10" etc
-      const normalised = card.size.replace(/[^0-9x]/gi, '');
-      const key = UNIT_KEY_MAP[normalised] || UNIT_KEY_MAP[card.rawText.match(/\d+\s*[x×]\s*\d+/i)?.[0]?.replace(/\s/g,'')] || null;
-      if (!key) return;
-
-      units[key] = {
-        ...units[key],
-        available: card.available,
-        price:     card.price || units[key]?.price,
-        lastSeen:  new Date().toISOString()
-      };
-
-      const status = card.available ? '🟢 AVAILABLE' : '🔴 Not Available';
-      console.log(`  ${key.padEnd(6)}  ${(card.price || '?').padEnd(6)}  ${status}`);
-    });
-  } else if (scraped.fallbackText) {
-    // Page didn't render expected selectors — print raw text for debugging
-    console.log('⚠️  Could not find unit cards. Raw page text:');
-    console.log(scraped.fallbackText.slice(0, 1000));
+  function deepFindUnits(payloads) {
+    const out = [];
+    const seen = new Set();
+    function visit(node) {
+      if (Array.isArray(node)) { node.forEach(visit); return; }
+      if (node && typeof node === 'object') {
+        // StorEdge unit-groups shape: { size:"10x11x8", price:75, available_units_count:0, area:110 }
+        if (typeof node.size === 'string' && node.price != null &&
+            (typeof node.price === 'number' || /\d/.test(String(node.price)))) {
+          const priceNum = parseFloat(String(node.price).replace(/[^0-9.]/g, ''));
+          let available = true;
+          if (typeof node.available_units_count === 'number') available = node.available_units_count > 0;
+          else if (typeof node.available === 'boolean') available = node.available;
+          const sig = node.size + '|' + priceNum + '|' + available;
+          if (!seen.has(sig)) { seen.add(sig); out.push({ sizeStr: node.size, price: priceNum, available }); }
+        }
+        Object.keys(node).forEach((k) => visit(node[k]));
+      }
+    }
+    payloads.forEach((p) => visit(p.body));
+    return out;
   }
 
-  // ── Write output ────────────────────────────────────────────────────────────
-  const output = {
-    lastUpdated: new Date().toISOString(),
-    facilityId:  '4e5d19f2-a80f-45d0-ba9f-e13f89f04275',
-    units
-  };
+  let existing = { units: {} };
+  try { existing = JSON.parse(fs.readFileSync(OUT_FILE, 'utf8')); } catch {}
+  const units = { ...existing.units };
+
+  const apiUnits = deepFindUnits(apiPayloads);
+  let found = 0;
+  console.log(`\n📦 ${cardTexts.length} card(s) rendered · ${apiUnits.length} priced record(s) in API\n`);
+
+  for (const u of apiUnits) {
+    const key = normaliseKey(u.sizeStr);
+    if (!key) continue;
+    const prev = units[key]?.perMonth;
+    const num = !isNaN(u.price) ? Math.round(u.price) : null;
+    const useNum = num != null && (prev == null || num < prev) ? num : (prev ?? num);
+    units[key] = {
+      ...units[key],
+      price:     useNum != null ? `$${useNum}` : (units[key]?.price || null),
+      perMonth:  useNum != null ? useNum : (units[key]?.perMonth ?? null),
+      available: u.available,
+      lastSeen:  new Date().toISOString(),
+    };
+    found++;
+  }
+
+  for (const key of ['8x10', '10x10', '12x10', '10x24']) {
+    const u = units[key];
+    if (!u) continue;
+    console.log(`  ${key.padEnd(6)} ${(u.price || '—').padEnd(6)} ${u.available ? '🟢 available' : '🔴 full'}`);
+  }
+
+  if (!found) {
+    console.log('\n⚠️  Nothing matched from the API. Card text captured was:\n');
+    cardTexts.forEach((t, i) => console.log(`   [${i}] ${t.replace(/\n/g, ' | ')}`));
+    console.log('\n   Existing data/availability.json left untouched.');
+    console.log('   Full raw data saved to data/storedge-raw.json — send me that file.');
+    process.exit(2);
+  }
 
   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
-  fs.writeFileSync(OUT_FILE, JSON.stringify(output, null, 2));
+  fs.writeFileSync(OUT_FILE, JSON.stringify({
+    lastUpdated: new Date().toISOString(),
+    facilityId:  FACILITY_ID,
+    units,
+  }, null, 2));
 
-  console.log(`\n✅ Saved to data/availability.json`);
-  console.log(`   ${new Date().toLocaleString()}\n`);
-})().catch(err => {
+  console.log(`\n✅ Saved data/availability.json  (${new Date().toLocaleString()})`);
+})().catch((err) => {
   console.error('❌ Scraper error:', err.message);
   process.exit(1);
 });
