@@ -47,6 +47,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/style.css" />
+  <!-- Cloudflare Turnstile -->
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 
   <script type="application/ld+json">
   {
@@ -187,6 +189,8 @@
           <textarea name="message" required rows="4" placeholder="Questions about units, pricing, availability, or anything else…"
             style="width:100%;padding:.7rem 1rem;border:1px solid var(--border);border-radius:8px;font-size:.95rem;font-family:inherit;resize:vertical;box-sizing:border-box;"></textarea>
         </div>
+        <!-- Cloudflare Turnstile widget -->
+        <div class="cf-turnstile" data-sitekey="0x4AAAAAAEdZBRAJlogc5LAu" style="margin-bottom:1rem;"></div>
         <button type="submit" id="contactSubmit"
           style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:8px;padding:.85rem 1.5rem;font-size:1rem;font-weight:700;font-family:inherit;cursor:pointer;">
           Send Message →
@@ -250,6 +254,14 @@
 <script>
 document.getElementById('contactForm').addEventListener('submit', async function(e) {
   e.preventDefault();
+  // Block submission if Turnstile hasn't been completed
+  var turnstileToken = this.querySelector('[name="cf-turnstile-response"]');
+  if (!turnstileToken || !turnstileToken.value) {
+    var errEl = document.getElementById('contactError');
+    errEl.textContent = 'Please complete the security check above.';
+    errEl.style.display = 'block';
+    return;
+  }
   var btn = document.getElementById('contactSubmit');
   btn.textContent = 'Sending…';
   btn.disabled = true;
