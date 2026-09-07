@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-06-26T21:53:04.786Z",
+  "lastUpdated": "2026-09-07T14:47:58.893Z",
   "facilityId": "4e5d19f2-a80f-45d0-ba9f-e13f89f04275",
   "units": {
     "8x10": {
@@ -8,7 +8,7 @@
       "price": "$60",
       "perMonth": 60,
       "available": false,
-      "lastSeen": "2026-06-26T21:53:04.786Z"
+      "lastSeen": "2026-09-07T14:47:58.892Z"
     },
     "10x10": {
       "label": "10 × 10",
@@ -16,7 +16,7 @@
       "price": "$85",
       "perMonth": 85,
       "available": false,
-      "lastSeen": "2026-06-26T21:53:04.786Z"
+      "lastSeen": "2026-09-07T14:47:58.892Z"
     },
     "12x10": {
       "label": "12 × 10",
@@ -24,7 +24,7 @@
       "price": "$90",
       "perMonth": 90,
       "available": false,
-      "lastSeen": "2026-06-26T21:53:04.786Z"
+      "lastSeen": "2026-09-07T14:47:58.892Z"
     },
     "10x24": {
       "label": "10 × 24",
@@ -32,7 +32,7 @@
       "price": "$115",
       "perMonth": 115,
       "available": false,
-      "lastSeen": "2026-06-26T21:53:04.785Z"
+      "lastSeen": "2026-09-07T14:47:58.885Z"
     }
   }
 }
